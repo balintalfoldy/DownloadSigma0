@@ -1,0 +1,25 @@
+{
+    "queries": [
+        {
+            "productTypeCodes": [
+                "PREPROC_S1L1SLC_POL"
+            ],
+            "filter": {
+                "discriminator": "string",
+                "condition": "AND",
+                "rules": []
+            },
+            "pagingInfo": {
+                "startPage": 0,
+                "pageSize": 150
+            },
+            "sortingInfo": [
+                {
+                    "sortColumn": "beginPosition",
+                    "sortDirection": "Ascending",
+                    "attributeType": "DateTime"
+                }
+            ]
+        }
+    ]
+}
