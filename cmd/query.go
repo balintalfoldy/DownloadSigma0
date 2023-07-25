@@ -6,22 +6,35 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 )
 
-var apiKey string
+const baseURL = "https://productapi.fir.gov.hu/api/v1/products"
 
-func getApiKey() error {
-
-	if apiKey == "" {
-		apiKey = os.Getenv("MY_APP_API_KEY")
+func getProductQuery(productId string, filterRules []Rules, startPage int) (*QueryData, error) {
+	queries := Queries{}
+	// Read the JSON data from the file.
+	queryBytes, err := ioutil.ReadFile("products_query.json")
+	if err != nil {
+		return nil, fmt.Errorf("error reading file: %s", err)
 	}
-	if apiKey == "" {
-		return fmt.Errorf("API key not provided and not found in environment")
+
+	err = json.Unmarshal(queryBytes, &queries)
+	if err != nil {
+		return nil, fmt.Errorf("error while unmarshalling query json: %s", err)
 	}
 
-	return nil
+	for _, query := range queries.Queries {
+		if query.ProductTypeCodes[0] == productId {
+			query.Filter.Rules = filterRules
+			query.PagingInfo.StartPage = startPage
+			return &query, nil
+		}
+	}
+
+	return nil, fmt.Errorf("product id %s not found", productId)
 }
 
 // queryCmd represents the query command
@@ -31,18 +44,13 @@ var queryCmd = &cobra.Command{
 	Long:  "Query products in the FIR database based on filtering parameters.",
 	Run: func(cmd *cobra.Command, args []string) {
 
-		const url = "https://productapi.fir.gov.hu/api/v1/products/query"
-
-		apiKey, err := cmd.Flags().GetString("api_key")
-		if err != nil {
-			fmt.Println("Invalid argument")
-		}
-
-		getApiKey()
-		if err != nil {
-			fmt.Println(err)
+		apiKey := os.Getenv("FIR_PROD_API_KEY")
+		if apiKey == "" {
+			fmt.Println("API key not provided and not found in environment")
 			return
 		}
+
+		client := NewClient(baseURL, apiKey, 10)
 
 		productId, err := cmd.Flags().GetString("id")
 		if err != nil {
@@ -86,50 +94,52 @@ var queryCmd = &cobra.Command{
 			Type:     "Integer",
 		}
 
-		queries := Queries{}
-		// Read the JSON data from the file.
-		queryBytes, err := ioutil.ReadFile("products_query.json")
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
+		var products []Product
+		for startPage := 0; startPage < 100; startPage++ {
+			queryData, err := getProductQuery(productId, []Rules{beginPositionFilterStart, beginPositionFilterEnd, relativeOrbitNumFilter}, startPage)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 
-		err = json.Unmarshal(queryBytes, &queries)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
+			queryJSON, err := json.Marshal(queryData)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 
-		var queryData QueryData
+			res := QueryResponse{}
+			if err := client.PostRequest("query", bytes.NewReader(queryJSON), &res); err != nil {
+				fmt.Println(err)
+				return
+			}
+			products = append(products, res.Products...)
 
-		for _, query := range queries.Queries {
-			if query.ProductTypeCodes[0] == productId {
-				queryData = query
+			if res.ItemCount >= len(products) {
 				break
 			}
 		}
 
-		if queryData.ProductTypeCodes[0] == "" {
-			fmt.Println("Product not found")
-			return
-		}
+		fmt.Println(products)
 
-		queryData.Filter.Rules = []Rules{beginPositionFilterStart, beginPositionFilterEnd, relativeOrbitNumFilter}
-
-		queryJSON, err := json.Marshal(queryData)
-		if err != nil {
-			fmt.Println(err)
-			return
+		if downloadFolder != "" {
+			client := NewClient(baseURL, apiKey, 600)
+			for _, product := range products {
+				outPath := fmt.Sprintf("%s/%s.zip", downloadFolder, product.ID)
+				url := fmt.Sprintf("%s/zip", product.ID)
+				size, err := strconv.ParseInt(product.Metadata.Size, 10, 64)
+				if err != nil {
+					fmt.Println(err)
+					size = 1
+				}
+				fmt.Printf("Downloading to %s\n", outPath)
+				err = client.DownloadFile(outPath, url, size)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+			}
 		}
-		fmt.Println(string(queryJSON))
-
-		resp, err := PostRequest(url, apiKey, bytes.NewReader(queryJSON))
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		fmt.Println(resp)
-		fmt.Println(downloadFolder)
 	},
 }
 

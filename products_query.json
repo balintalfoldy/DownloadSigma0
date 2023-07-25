@@ -11,7 +11,7 @@
             },
             "pagingInfo": {
                 "startPage": 0,
-                "pageSize": 150
+                "pageSize": 10
             },
             "sortingInfo": [
                 {
