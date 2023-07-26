@@ -27,9 +27,23 @@ func NewClient(baseURL string, apiKey string, timeOutSec int) *Client {
 	}
 }
 
-func (client *Client) DownloadFile(outPath string, url string, size int64) error {
+func GetProgressbar(size int) *progressbar.ProgressBar {
+	bar := progressbar.NewOptions(size,
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionSetWidth(60),
+		progressbar.OptionSetDescription("Downloading file..."),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "[green]|[reset]",
+			SaucerHead:    "[yellow]>[reset]",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}))
+	return bar
+}
 
-	start := time.Now().UnixMilli()
+func (client *Client) DownloadFile(outPath string, url string, size int64, bar *progressbar.ProgressBar) error {
 
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%s", client.BaseURL, url), nil)
 	if err != nil {
@@ -43,39 +57,21 @@ func (client *Client) DownloadFile(outPath string, url string, size int64) error
 	if err != nil {
 		return fmt.Errorf("error making http request: %s", err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status: %s", resp.Status)
 	}
-	defer resp.Body.Close()
 
-	f, _ := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY, 0644)
-	//bar := progressbar.DefaultBytes(
-	//	size,
-	//	"downloading",
-	//)
-	bar := progressbar.NewOptions(int(size),
-		progressbar.OptionEnableColorCodes(true),
-		progressbar.OptionShowBytes(true),
-		progressbar.OptionSetWidth(60),
-		progressbar.OptionSetDescription("Downloading file..."),
-		progressbar.OptionSetTheme(progressbar.Theme{
-			Saucer:        "[green]|[reset]",
-			SaucerHead:    "[yellow]>[reset]",
-			SaucerPadding: " ",
-			BarStart:      "[",
-			BarEnd:        "]",
-		}))
+	f, err := os.Create(outPath)
+	if err != nil {
+		return fmt.Errorf("error creating file: %s", err)
+	}
+	defer f.Close()
 
 	if _, err := io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {
 		return fmt.Errorf("error while downloading: %v", err)
 	}
-
-	defer f.Close()
-	bar.Set(int(size))
-	bar.Finish()
-
-	fmt.Printf("Took: %.2fs\n", float64(time.Now().UnixMilli()-start)/1000)
 
 	return nil
 }

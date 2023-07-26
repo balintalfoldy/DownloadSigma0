@@ -4,19 +4,23 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
+	"sync"
 
+	"github.com/IceflowRE/go-multiprogressbar"
+	"github.com/nathan-fiscaletti/consolesize-go"
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
 const baseURL = "https://productapi.fir.gov.hu/api/v1/products"
+const concurrentDownloads = 4 // number of Wait groups for parallel processing
 
 func getProductQuery(productId string, filterRules []Rules, startPage int) (*QueryData, error) {
 	queries := Queries{}
 	// Read the JSON data from the file.
-	queryBytes, err := ioutil.ReadFile("products_query.json")
+	queryBytes, err := os.ReadFile("products_query.json")
 	if err != nil {
 		return nil, fmt.Errorf("error reading file: %s", err)
 	}
@@ -37,11 +41,11 @@ func getProductQuery(productId string, filterRules []Rules, startPage int) (*Que
 	return nil, fmt.Errorf("product id %s not found", productId)
 }
 
-// queryCmd represents the query command
-var queryCmd = &cobra.Command{
-	Use:   "query",
-	Short: "Query products.",
-	Long:  "Query products in the FIR database based on filtering parameters.",
+// downloadCmd represents the download command
+var downloadCmd = &cobra.Command{
+	Use:   "download",
+	Short: "Download products.",
+	Long:  "Download products from the FIR database based on filtering parameters.",
 	Run: func(cmd *cobra.Command, args []string) {
 
 		apiKey := os.Getenv("FIR_PROD_API_KEY")
@@ -50,7 +54,7 @@ var queryCmd = &cobra.Command{
 			return
 		}
 
-		client := NewClient(baseURL, apiKey, 10)
+		client := NewClient(baseURL, apiKey, 20)
 
 		productId, err := cmd.Flags().GetString("id")
 		if err != nil {
@@ -70,6 +74,10 @@ var queryCmd = &cobra.Command{
 		downloadFolder, err := cmd.Flags().GetString("download_folder")
 		if err != nil {
 			fmt.Println("Invalid argument")
+			return
+		}
+		if downloadFolder == "" {
+			fmt.Println("Please provide a download folder")
 			return
 		}
 
@@ -120,34 +128,75 @@ var queryCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Println(products)
+		_, rows := consolesize.GetConsoleSize()
+		fmt.Printf("\033[%d;0H", rows)
+		fmt.Printf("A total of %d products will be downloaded\n", len(products))
 
-		if downloadFolder != "" {
-			client := NewClient(baseURL, apiKey, 600)
-			for _, product := range products {
-				outPath := fmt.Sprintf("%s/%s.zip", downloadFolder, product.ID)
-				url := fmt.Sprintf("%s/zip", product.ID)
-				size, err := strconv.ParseInt(product.Metadata.Size, 10, 64)
+		client = NewClient(baseURL, apiKey, 600)
+
+		mpb := multiprogressbar.New()
+
+		for _, p := range products {
+			size, err := strconv.ParseInt(p.Metadata.Size, 10, 64)
+			if err != nil {
+				fmt.Println(err)
+				size = 1
+			}
+			pBar := GetProgressbar(int(size))
+			mpb.Add(pBar)
+		}
+
+		var wg sync.WaitGroup
+
+		for i := 0; i < len(products); i += concurrentDownloads {
+			end := i + concurrentDownloads
+			if end > len(products) {
+				end = len(products)
+			}
+			group := products[i:end]
+
+			for i, p := range group {
+
+				outPath := fmt.Sprintf("%s/%s.zip", downloadFolder, p.ID)
+				url := fmt.Sprintf("%s/zip", p.ID)
+				size, err := strconv.ParseInt(p.Metadata.Size, 10, 64)
 				if err != nil {
 					fmt.Println(err)
 					size = 1
 				}
-				fmt.Printf("Downloading to %s\n", outPath)
-				err = client.DownloadFile(outPath, url, size)
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
+				bar := mpb.Get(i)
+
+				wg.Add(1)
+				go func(o string, u string, s int64, b *progressbar.ProgressBar) {
+
+					defer func() {
+						wg.Done()
+					}()
+
+					if err := client.DownloadFile(o, u, s, b); err != nil {
+						b.Exit()
+						fmt.Printf("Error downloading %s: %s\n", u, err)
+					} else {
+						b.Finish()
+					}
+				}(outPath, url, size, bar)
 			}
+
+			wg.Wait()
+			cols, rows := consolesize.GetConsoleSize()
+			fmt.Printf("\033[%d;%dH", rows, cols)
 		}
+
+		fmt.Println("\nAll files downloaded")
+
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(queryCmd)
+	rootCmd.AddCommand(downloadCmd)
 
-	queryCmd.Flags().StringP("id", "i", "", "Product ID")
-	queryCmd.Flags().StringSliceP("begin_position", "b", nil, "Begin position")
-	queryCmd.Flags().StringP("relative_orbit_number", "r", "", "Relative orbit number")
-	queryCmd.Flags().StringP("download_folder", "d", "", "Download folder")
+	downloadCmd.Flags().StringP("id", "i", "", "Product ID")
+	downloadCmd.Flags().StringSliceP("begin_position", "b", nil, "Begin position")
+	downloadCmd.Flags().StringP("relative_orbit_number", "r", "", "Relative orbit number")
+	downloadCmd.Flags().StringP("download_folder", "d", "", "Download folder")
 }
